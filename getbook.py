@@ -18,6 +18,35 @@ import multiprocessing
 import time
 import traceback
 import socket
+import os
+
+def get_charset(content):
+    '''
+        获取网页编码字符集
+        @param content 网页内容，bytes
+        @return 返回字符集编码名字
+    '''
+    # 不太懂html，我google了一下如果没有设置charset默认是ISO-8859-1，但实际测试了几个网站发现会报错
+    # utf8解码就正常
+    # html4 <meta http-equiv="Content-Type" content="text/html;charset=utf-8">
+    # html5 <meta charset="utf-8">
+    byte_search = str.encode('charset=')
+    index = content.find(byte_search)
+    if index == -1:
+        return 'utf-8' #'ISO-8859-1'
+    
+    index = index + len(byte_search)
+    if index >= len(content):
+        return 'utf-8'
+
+    if content[index] == str.encode('"')[0]:
+        index = index + 1
+
+    end = content.find(str.encode('"'),index)
+    if end == -1:
+        return 'utf-8' #'ISO-8859-1'
+
+    return content[index:end].decode()
 
 def load_url(url,timeout = None):
     '''
@@ -28,14 +57,21 @@ def load_url(url,timeout = None):
     user_agent = 'Mozilla/4.0 (compatible; MSIE 5.5; Windows NT)'
     headers = { 'User-Agent' : user_agent }
     req = urllib.request.Request(url,headers = headers)
-    
     try:
         if timeout:
             resp = urllib.request.urlopen(req,timeout = timeout)
         else :
             resp = urllib.request.urlopen(req)
         
-        content = resp.read().decode('utf-8')
+        if not resp:
+            return None
+    
+        content = resp.read()
+        if not content:
+            return None
+    
+        content = content.decode(get_charset(content))
+
     except urllib.error.URLError as e:
         if hasattr(e, 'code'):
             print(e.code)
@@ -48,9 +84,9 @@ def load_url(url,timeout = None):
     except socket.timeout:
         print("超时")
         return None
-    except :
-        print("未知的异常")
-        return None
+#    except :
+#        print("未知的异常")
+#        return None
 
     return content
 
@@ -127,11 +163,10 @@ def multiprocess_load(argv):
     # 添加到队列中
     qu.put([argv[2],content],False)
 
-def main(url,multi = True):
+def get_book(url,multi = True):
     '''
-        主函数，爬取小说。
+        爬取小说。
         @param url 目录的url
-        @param file_name 要存入的文件名
         @param multi 是否开启多线程加载
         @return 成功返回0，失败返回索引表示存了多少章
     '''
@@ -148,7 +183,7 @@ def main(url,multi = True):
     if not arr:
         print("获取目录失败",url)
         return 4
-    
+
     # 为了支持多进程，要给arr加一点参数
     num = 0
     chapters = []
@@ -165,9 +200,13 @@ def main(url,multi = True):
         return 0
     web_site = url[0:index]
 
+    # windows系统上多进程无法工作，这里强制转成单线程
+    if sys.platform == "win32" or sys.platform == "cygwin":
+        multi = False
+
     if multi:
         # 所有要加载的章节全部存在arr中,这里开20个线程加载,如果网络不错，可以开200个。
-        pool = multiprocessing.Pool(100)
+        pool = multiprocessing.Pool(20)
         pool.map_async(multiprocess_load,chapters)
         pool.close()
     else :
@@ -207,6 +246,39 @@ def main(url,multi = True):
     f.close()
 
     return 0
+
+def search_book(name):
+    '''
+        根据名字搜索，如果找到，则返回目录
+        @param name 书名
+        @return 成功返回目录url，失败返回None
+    '''
+    content = load_url('http://zhannei.baidu.com/cse/search?s=287293036948159515&q=' + urllib.parse.quote(name))
+    if not content:
+        return None
+    
+    arr = re.findall('<a cpos="title" href="(.*?)" title="(.*?)" class="result-game-item-title-link" target="_blank">',content)
+    if not arr:
+        return None
+
+    return arr[0][0]
+
+def main(str):
+    '''
+        主函数，如果str是书名则搜索该书籍，并下载第一个搜索结果，如果是url则直接下载。
+    '''
+    if str.find("http://") == -1 :
+        url = search_book(str)
+        if not url:
+            print("没有找到书籍",str)
+            return
+    else :
+        url = str
+
+    if get_book(url):
+        print("获取书籍失败！")
+    else:
+        print("获取书籍成功，就在当前目录下")
 
 if __name__ == "__main__":
     main(sys.argv[1])
